@@ -17,7 +17,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from .config import DB_PATH
 from .guardrails import FAILURE_PATTERN, process_integrated_output_guardrail
 from .llm import llm
-from .sql_agent import ask_sql_agent
+from .sql_agent import ask_sql_agent, build_agent
 
 # Times between 01:00 and 06:59 never occur for a food delivery, but the data stores some that way
 # (e.g. order O12493, delivery_eta 01:10). Mark them as PM-approximate instead of silently rewriting.

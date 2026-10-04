@@ -1,0 +1,98 @@
+name: Food Delivery Chatbot Pipeline
+
+on:
+  push:
+    branches:
+      - main  # Automatically triggers on push to the main branch
+  workflow_dispatch:  # lets you click "Run workflow" in the Actions tab
+
+permissions:
+  contents: read  # this pipeline only validates; nothing is committed back
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20   # the live test can wait on Groq's per-minute token budget
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        # Pulls everything already committed, including
+        # food_delivery_chatbot/data/customer_orders.db.
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: food_delivery_chatbot/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r food_delivery_chatbot/requirements.txt
+
+      - name: Initialize / verify database
+        # Checks the .db file directly with sqlite3 and deliberately does NOT import
+        # the foodhub package (importing it runs llm.py, which needs GROQ_API_KEY).
+        run: |
+          python - <<'EOF'
+          import sqlite3, os
+          path = 'food_delivery_chatbot/data/customer_orders.db'
+          if not os.path.exists(path):
+              raise SystemExit(f'::error::{path} is missing. Commit the .db file and push again.')
+          conn = sqlite3.connect(path)
+          tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+          conn.close()
+          if not tables:
+              raise SystemExit('::error::Database has no tables.')
+          print('Database OK. Tables:', tables)
+          EOF
+
+      - name: Syntax-check every module
+        run: |
+          python -m py_compile food_delivery_chatbot/foodhub/*.py food_delivery_chatbot/streamlit_app.py
+          echo "All modules compiled cleanly."
+
+      - name: Smoke test (imports the package, checks the DB has tables)
+        env:
+          # Working directory stays at the repo root so DB_PATH resolves;
+          # food_delivery_chatbot/ is added to PYTHONPATH so `import foodhub` works.
+          PYTHONPATH: food_delivery_chatbot
+          # Dummy key so foodhub.llm's presence check passes. This step never calls Groq.
+          GROQ_API_KEY: "sk-smoke-test-placeholder"
+        run: |
+          python - <<'EOF'
+          from foodhub.database import TABLES
+          from foodhub import chatagent
+          assert 'orders' in TABLES, f'Expected an orders table, found: {TABLES}'
+          print('Package imports cleanly. Tables found:', TABLES)
+          EOF
+
+      - name: Check whether GROQ_API_KEY secret is configured
+        # Exposes the result as an env var the next step can gate on.
+        run: echo "GROQ_API_KEY_SET=${{ secrets.GROQ_API_KEY != '' }}" >> "$GITHUB_ENV"
+
+      - name: Live integration test
+        # Runs only if a real key exists under Settings -> Secrets -> Actions -> GROQ_API_KEY.
+        if: ${{ env.GROQ_API_KEY_SET == 'true' }}
+        env:
+          PYTHONPATH: food_delivery_chatbot
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python - <<'EOF'
+          import re
+          from foodhub import chatagent
+          from foodhub.guardrails import FALLBACK_RESPONSE
+
+          # 1) Own order: a real answer, not the failure fallback, and about the order.
+          reply = chatagent("ci-own-order", "C1026", "Where is my order O12501")
+          print("own-order reply:", reply)
+          assert reply.strip(), "chatagent() returned an empty response"
+          assert reply.strip() != FALLBACK_RESPONSE, "chatagent() fell back to the failure message"
+          assert re.search(r"O12501|prepar", reply, re.I), f"reply does not mention the order: {reply!r}"
+
+          # 2) Someone else's order: refused by the ownership check, nothing leaked.
+          reply = chatagent("ci-cross-customer", "C1026", "What is the status of order O12488")
+          print("cross-customer reply:", reply)
+          assert "incorrect customer or order details" in reply.lower(), f"unexpected reply: {reply!r}"
+          assert not re.search(r"deliver|completed|C1013", reply, re.I), "reply leaked another customer's data"
+          EOF
+      

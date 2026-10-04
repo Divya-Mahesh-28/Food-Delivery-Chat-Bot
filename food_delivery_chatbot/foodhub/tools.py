@@ -167,6 +167,19 @@ def confirm_cancellation(authenticated_cust_id: str, order_id: str) -> str:
         return reason
     return f"Your order {row['order_id']} has been cancelled."
 
+def combine_tools(authenticated_cust_id: str, authorized_order_id: Optional[str]) -> list:
+    """Combine the Order Query Tool (bound to the verified customer/order)
+    and the Answer Tool into the toolset the Chat Agent can call."""
+    order_tool = make_order_query_tool(authenticated_cust_id, authorized_order_id)
+    return [order_tool, answer_tool]   # order: facts first, polish second
+
+def build_chat_agent(authenticated_cust_id: str, authorized_order_id: Optional[str]):
+    """Chat Agent = LLM + combined tools + CHAT_AGENT_PROMPT.
+    Built per request so the tools stay bound to the verified identity.
+    Returns (agent, order_query_tool); the orchestrator reuses the tool as a fallback."""
+    tools = combine_tools(authenticated_cust_id, authorized_order_id)
+    return build_agent(llm, tools, CHAT_AGENT_PROMPT), tools[0]
+
 @tool
 def answer_tool(raw_response: str, user_context: str) -> str:
     """Rewrites a raw order-lookup response into a polite, formal, concise

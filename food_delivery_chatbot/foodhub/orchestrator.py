@@ -123,9 +123,8 @@ def chatagent(session_id: str, authenticated_cust_id: str, user_message: str) ->
         return _save_and_return(session_id, msg, reply)
 
     # 6. Chat Agent, tools bound to verified identity for this request
-    bound_order_tool = make_order_query_tool(authenticated_cust_id, target_order_id)
-    session_chat_agent = build_agent(llm, [bound_order_tool, answer_tool], CHAT_AGENT_PROMPT)
-
+    session_chat_agent, bound_order_tool = build_chat_agent(authenticated_cust_id, target_order_id)
+    
     agent_result = session_chat_agent.invoke(
         {"messages": [HumanMessage(content=msg)]},
         config={"recursion_limit": AGENT_RECURSION_LIMIT},
